@@ -2,9 +2,8 @@
 
 一个基于阿里云百炼 OpenAI 兼容接口、使用 Python 从零实现的轻量 Coding Agent。
 
-本项目用于学习 Agent 的底层运行机制，项目自行实现。
+本项目用于学习 Agent 的底层运行机制，自行实现。
 
-项目基于 [claude-code-from-scratch](https://github.com/Windy3f3f3f3f/claude-code-from-scratch) 进行学习与扩展，并借鉴了工具注册等 Agent 框架设计思想。
 
 ## 项目目标
 
@@ -218,3 +217,4 @@ python main.py "读取 main.py 并说明程序入口"
 - 建立 Python 实现教程与开发问题日志。
 ```
 
+项目基于 [claude-code-from-scratch](https://github.com/Windy3f3f3f3f/claude-code-from-scratch) 进行学习与扩展，并借鉴了工具注册等 Agent 框架设计思想。

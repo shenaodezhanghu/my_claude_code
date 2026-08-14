@@ -4,6 +4,9 @@ from mini_claude.agent import MINI_CLUE_AGENT
 from mini_claude.session import load_session, save_session
 from uuid import uuid4
 from pathlib import Path
+from mini_claude.skills import resolve_skill
+
+
 ENV_FILE = Path(__file__).resolve().parent / ".env"
 load_dotenv()
 
@@ -14,15 +17,21 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--resume", metavar="SESSION_ID", help="恢复上一次会话")
     parser.add_argument("--new", action="store_true", help="创建新会话")
     parser.add_argument("--model", "-m",help="目前还没实现，修改模型", default=None)
-    parser.add_argument("--permission-mode", choices=["default", "accept_edits", "dont_ask"], default="default",
-    )
+    parser.add_argument("--permission-mode", choices=["default", "accept_edits", "dont_ask"], default="default",)
+    parser.add_argument("--plan",action="store_true",help="以只读规划模式运行",)
 
     return parser.parse_args()
 
 
+def resolve_user_input(agent: MINI_CLUE_AGENT, text: str) -> str:
+    return resolve_skill(
+        text,
+        agent.tool_context.project_root,
+    ) or text
+
+
 def run_one_shot(agent: MINI_CLUE_AGENT, prompt: str, session_id: str) -> None:
-    answer = agent.chat(prompt)
-    print(answer)
+    agent.chat(resolve_user_input(agent, prompt))
     save_session(session_id, agent.history())
 
 
@@ -53,13 +62,16 @@ def run_repl(agent: MINI_CLUE_AGENT, session_id: str) -> None:
             print("历史已清空。")
             continue
 
-        agent.chat(line)
+        agent.chat(resolve_user_input(agent, line))
         save_session(session_id, agent.history())
 
 
 def main() -> None:
     args = parse_args()
     agent = MINI_CLUE_AGENT(permission_mode=args.permission_mode)
+    if args.plan:
+        agent.set_mode("plan")
+        print("已进入 Plan Mode：只读，不会修改文件或运行 Shell。")
     session_id = args.resume or uuid4().hex
 
     if args.resume:
@@ -71,10 +83,14 @@ def main() -> None:
         save_session(session_id, [])
 
     prompt = " ".join(args.prompt).strip()
-    if prompt:
-        run_one_shot(agent, prompt, session_id)
-    else:
-        run_repl(agent, session_id)
+    try:
+        if prompt:
+            run_one_shot(agent, prompt, session_id)
+        else:
+            run_repl(agent, session_id)
+    finally:
+        agent.close()
+
 
 
 if __name__ == "__main__":

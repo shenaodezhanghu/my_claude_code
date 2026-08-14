@@ -24,10 +24,10 @@ def load_session(session_id: str) -> list[dict]:
     session_file = get_session_file(session_id)
 
     if not session_file.is_file():
-        return None
+        return []
 
     try:
         value = json.loads(session_file.read_text(encoding="utf-8"))
-        return value if isinstance(value, list) else None
+        return value if isinstance(value, list) else []
     except (OSError, json.JSONDecodeError):
-        return None
+        return []

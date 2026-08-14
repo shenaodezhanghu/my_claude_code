@@ -3,6 +3,11 @@ from typing import Literal
 import re
 
 PermissionAction = Literal["allow", "deny", "confirm"]
+PLAN_BLOCKED_TOOLS = {
+    "write_file",
+    "edit_file",
+    "run_shell",
+}
 DANGEROUS_COMMANDS = (
     r"\brm\s+-rf\b",
     r"\bdel\s+/[sq]\b",
@@ -19,6 +24,7 @@ READ_ONLY_TOOLS = {
     "web_fetch",
     "web_search",
     "environment_info",
+    "agent",
 }
 EDIT_TOOLS = {"write_file", "edit_file"}
 
@@ -40,7 +46,18 @@ def check_permission(
     tool_name: str,
     arguments: dict,
     mode: str = "default",
+    agent_mode: str = "default",
 ) -> PermissionResult:
+    if agent_mode == "plan" and tool_name in PLAN_BLOCKED_TOOLS:
+        return PermissionResult(
+            "deny",
+            f"Plan Mode 禁止执行 {tool_name}",
+        )
+    if agent_mode == "plan" and tool_name.startswith("mcp__"):
+        return PermissionResult(
+            "deny",
+            "Plan Mode 禁止调用行为未知的 MCP 外部工具",
+        )
     if tool_name in READ_ONLY_TOOLS:
         return PermissionResult("allow")
 

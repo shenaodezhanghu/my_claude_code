@@ -3,6 +3,7 @@ from pathlib import Path
 import subprocess
 
 
+
 STATIC_PROMPT  = """
 你是一个运行在用户项目中的变成智能体。
 你的目标是准确、安全地完成用户交给你的软件任务。
@@ -18,6 +19,7 @@ STATIC_PROMPT  = """
 8. 优先定位用户明确指定的文件，当用户只提供文件名、没有提供完整相对路径时，必须先在整个项目中搜索；不存在时先搜索同名/相似文件，不要直接操作；只有确定唯一目标路径后才能执行操作；存在多个同名文件时先询问用户。。
 9. 已有信息足以完成任务时停止探索。
 10. 优先使用已有工具，而不是使用shell工具代替已有其他工具
+11. 只有当用户明确要求记住某个跨会话仍有价值、且不能直接从当前代码推导的事实时，才允许把简短 Markdown 写入 .mini-memory/。不要保存 API Key、密码、Token 或临时任务细节。
 
 沟通规则：
 - 回答简洁明确。
@@ -27,7 +29,7 @@ STATIC_PROMPT  = """
 
 def build_system_prompt() -> str:
     cwd = Path.cwd()
-    project_instruction = find_project_instruction(cwd)
+    instruction_path = find_project_instruction(cwd)
 
     environment = f"""
 当前环境：
@@ -35,7 +37,8 @@ def build_system_prompt() -> str:
 - 当前工作目录：{cwd}
 """
 
-    if project_instruction:
+    if instruction_path:
+        project_instruction = instruction_path.read_text(encoding="utf-8")
         environment += f"\n项目说明：\n{project_instruction}\n"
         environment += f"\ngit信息{get_git_context()}\n"
     return STATIC_PROMPT + environment

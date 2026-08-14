@@ -3,9 +3,11 @@ from __future__ import annotations
 from .base import Tool, ToolContext
 
 
-MAX_RESULT_CHARS = 50_000
+# MAX_RESULT_CHARS = 50_000
 
 
+# 截断结果
+"""
 def truncate_result(result: str) -> str:
     if len(result) <= MAX_RESULT_CHARS:
         return result
@@ -17,7 +19,7 @@ def truncate_result(result: str) -> str:
         + f"\n\n[... truncated {omitted} characters ...]\n\n"
         + result[-keep_each:]
     )
-
+"""
 
 class ToolRegistry:
     """统一管理工具注册、Schema 导出和调用分发。"""
@@ -53,4 +55,4 @@ class ToolRegistry:
 
         if not isinstance(result, str):
             result = str(result)
-        return truncate_result(result)
+        return result

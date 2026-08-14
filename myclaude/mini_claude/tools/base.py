@@ -2,6 +2,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from collections.abc import Callable
 
 
 @dataclass
@@ -10,6 +11,7 @@ class ToolContext:
 
     project_root: Path
     read_file_state: dict[str, float] = field(default_factory=dict)
+    subagent_runner: Callable[[str], str] | None = None
 
 
 class Tool(ABC):

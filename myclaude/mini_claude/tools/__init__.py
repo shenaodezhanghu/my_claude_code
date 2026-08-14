@@ -13,6 +13,7 @@ from .registry import ToolRegistry
 from .shell_tools import RunShellTool
 from .web_tools import WebFetchTool, WebSearchTool
 from .environment_tools import EnvironmentInfoTool
+from .agent_tool import AgentTool
 
 
 def create_default_registry() -> ToolRegistry:
@@ -26,6 +27,7 @@ def create_default_registry() -> ToolRegistry:
     registry.register(WebFetchTool())
     registry.register(WebSearchTool())
     registry.register(EnvironmentInfoTool())
+    registry.register(AgentTool())
     return registry
 
 

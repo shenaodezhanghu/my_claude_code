@@ -5,14 +5,14 @@ from mini_claude.model import (
     get_model_capabilities,
 )
 from mini_claude.tools import create_default_registry, create_tool_context
-from mini_claude.prompt import build_system_prompt
+from mini_claude.prompt import build_prompt_parts, build_system_message
 from dataclasses import dataclass
 import time
 from mini_claude.retry import with_retry
 from mini_claude.permissions import check_permission
 from mini_claude.context import persist_large_result
 from mini_claude.context import maybe_compact
-from mini_claude.memory import recall_memories
+
 from mini_claude.subagent import run_sub_agent
 from mini_claude.mcp_client import (
     McpConnection,
@@ -21,18 +21,29 @@ from mini_claude.mcp_client import (
 )
 from mini_claude.tools.mcp_tool import McpProxyTool
 
+import threading
 
+from mini_claude.scheduler import ToolJob, ToolScheduler
+from mini_claude.streaming import StreamResult, collect_stream
+from mini_claude.budget import BudgetLimits, BudgetState
 
-@dataclass
-class StreamResult:
-    message: dict
-    finish_reason: str
+from mini_claude.retry import is_prompt_too_long
 
 
 class MINI_CLUE_AGENT:
-    def __init__(self, permission_mode: str = "default") -> None:
+    def __init__(
+            self,
+            permission_mode: str = "default",
+            model: str | None = None,
+            max_turns: int | None = None,
+            max_cost_usd: float | None = None,
+            input_price_per_million: float = 0.0,
+            output_price_per_million: float = 0.0,
+            cache_read_price_per_million: float = 0.0,
+    ) -> None:
         self.client = create_client()
-        self.model = get_model()
+        self.model = get_model(model)
+        self.model_capabilities = get_model_capabilities()
         self.messages: list[dict] = []
         self.tools = create_default_registry()
         self.tool_context = create_tool_context()
@@ -48,6 +59,20 @@ class MINI_CLUE_AGENT:
         self.mode = "default"
         self.mcp: McpConnection | None = None
         self.mcp_attempted = False
+        self.usage: dict = {}
+        self.cancelled = threading.Event()
+        self.scheduler = ToolScheduler(max_workers=4)
+        self.budget = BudgetState(
+            BudgetLimits(
+                max_turns=max_turns,
+                max_cost_usd=max_cost_usd,
+                input_price_per_million=input_price_per_million,
+                output_price_per_million=output_price_per_million,
+                cache_read_price_per_million=(
+                    cache_read_price_per_million
+                ),
+            )
+        )
 
 
     def _confirm(self, message: str) -> bool:
@@ -86,16 +111,38 @@ class MINI_CLUE_AGENT:
             print(f"MCP 连接失败：{exc}")
 
 
+
     def chat(self, user_text: str) -> str:
         self._ensure_mcp()
+        reason = self.budget.stop_reason()
+        if reason:
+            print(f"Agent 已停止：{reason}")
+            return reason
         self.messages.append({"role": "user", "content": user_text})
+
+
         while True:
             self.messages = maybe_compact(
                 self.messages,
                 self.client,
                 self.model,
             )
-            result = with_retry(lambda: self._call_model_stream(user_text))
+            try:
+                result = with_retry(
+                    lambda: self._call_model_stream(user_text)
+                )
+            except Exception as exc:
+                if not is_prompt_too_long(exc):
+                    raise
+                self.messages = maybe_compact(
+                    self.messages,
+                    self.client,
+                    self.model,
+                )
+                result = self._call_model_stream(user_text)
+
+            self.usage = result.usage
+            self.budget.record_usage(result.usage)
             message = result.message
             self.messages.append(message)
 
@@ -103,48 +150,13 @@ class MINI_CLUE_AGENT:
             if not tool_calls:
                 return str(message.get("content") or "")
 
-            for tool_call in tool_calls:
-                name = tool_call["function"]["name"]
-                try:
-                    arguments = json.loads(tool_call["function"]["arguments"])
-                except json.JSONDecodeError as exc:
-                    tool_result = f"Error: invalid tool arguments: {exc}"
-                else:
-                    print(f"-> {name}: {arguments}")
+            tool_messages = self._run_tool_calls(tool_calls)
+            self.messages.extend(tool_messages)
 
-                    permission = check_permission(
-                        name,
-                        arguments,
-                        self.permission_mode,
-                        self.mode,
-                    )
-
-                    if permission.action == "deny":
-                        tool_result = f"Action denied: {permission.message}"
-
-                    elif permission.action == "confirm":
-                        key = f"{name}:{permission.message}"
-                        allowed = (
-                                key in self.confirmed_actions
-                                or self._confirm(permission.message)
-                        )
-
-                        if allowed:
-                            self.confirmed_actions.add(key)
-                            tool_result = self._execute_tool(name, arguments)
-                        else:
-                            tool_result = "User denied this action."
-
-                    else:
-                        tool_result = self._execute_tool(name, arguments)
-
-                self.messages.append(
-                    {
-                        "role": "tool",
-                        "tool_call_id": tool_call["id"],
-                        "content": tool_result,
-                    }
-                )
+            reason = self.budget.stop_reason()
+            if reason:
+                print(f"Agent 已停止：{reason}")
+                return reason
 
     def close(self) -> None:
         if self.mcp is not None:
@@ -184,78 +196,33 @@ class MINI_CLUE_AGENT:
 
     def _call_model_stream(self, user_context: str) -> StreamResult:
 
-        system_prompt = build_system_prompt()
-        system_prompt += self._mode_prompt()
-        system_prompt += recall_memories(
-            user_context,
-            self.tool_context.project_root,
+        prompt_parts = build_prompt_parts(
+            project_root=self.tool_context.project_root,
+            mode_prompt=self._mode_prompt(),
+            memory_prompt="",
+            deferred_names=self.tools.deferred_names(),
+        )
+        system_message = build_system_message(
+            prompt_parts,
+            self.model_capabilities,
         )
 
         stream = self.client.chat.completions.create(
             model=self.model,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                *self.messages,
-            ],
+            messages=[system_message, *self.messages],
             tools=self.tools.schemas(),
             stream=True,
+            stream_options={"include_usage": True},
         )
 
-        content_parts: list[str] = []
-        tool_calls: dict[int, dict] = {}
-        finish_reason = "stop"
         print("助手：")
-        for chunk in stream:
-            if not chunk.choices:
-                continue
-
-            choice = chunk.choices[0]
-            delta = choice.delta
-
-            if delta.content:
-                self.print_smooth(delta.content)
-                content_parts.append(delta.content)
-
-            if delta.tool_calls:
-                for part in delta.tool_calls:
-                    current = tool_calls.setdefault(
-                        part.index,
-                        {"id": "", "name": "", "arguments": ""},
-                    )
-                    if part.id:
-                        current["id"] = part.id
-                    if part.function and part.function.name:
-                        current["name"] += part.function.name
-                    if part.function and part.function.arguments:
-                        current["arguments"] += part.function.arguments
-
-            if choice.finish_reason:
-                finish_reason = choice.finish_reason
-
-        content = "".join(content_parts)
-        assembled_calls = [
-            {
-                "id": item["id"],
-                "type": "function",
-                "function": {
-                    "name": item["name"],
-                    "arguments": item["arguments"],
-                },
-            }
-            for _, item in sorted(tool_calls.items())
-        ]
-
-        message: dict = {
-            "role": "assistant",
-            "content": content or None,
-        }
-        if assembled_calls:
-            message["tool_calls"] = assembled_calls
-
-        if content:
+        result = collect_stream(
+            stream,
+            on_text=self.print_smooth,
+        )
+        if result.message.get("content"):
             print()
-
-        return StreamResult(message=message, finish_reason=finish_reason)
+        return result
 
     def _execute_tool(self, name: str, arguments: dict) -> str:
         raw_result = self.tools.execute(
@@ -268,3 +235,94 @@ class MINI_CLUE_AGENT:
             raw_result,
             self.tool_context.project_root,
         )
+
+    def _prepare_tool_jobs(
+            self,
+            tool_calls: list[dict],
+    ) -> tuple[list[ToolJob], dict[int, str]]:
+        jobs: list[ToolJob] = []
+        immediate_results: dict[int, str] = {}
+
+        for index, tool_call in enumerate(tool_calls):
+            name = str(tool_call["function"]["name"])
+            call_id = str(tool_call["id"])
+            try:
+                arguments = json.loads(
+                    tool_call["function"]["arguments"]
+                )
+            except json.JSONDecodeError as exc:
+                immediate_results[index] = (
+                    f"Error: invalid tool arguments: {exc}"
+                )
+                continue
+
+            print(f"-> {name}: {arguments}")
+            permission = check_permission(
+                name,
+                arguments,
+                self.permission_mode,
+                self.mode,
+            )
+
+            if permission.action == "deny":
+                immediate_results[index] = (
+                    f"Action denied: {permission.message}"
+                )
+                continue
+
+            if permission.action == "confirm":
+                key = f"{name}:{permission.message}"
+                allowed = (
+                        key in self.confirmed_actions
+                        or self._confirm(permission.message)
+                )
+                if not allowed:
+                    immediate_results[index] = (
+                        "User denied this action."
+                    )
+                    continue
+                self.confirmed_actions.add(key)
+
+            tool = self.tools.get(name)
+            jobs.append(
+                ToolJob(
+                    index=index,
+                    call_id=call_id,
+                    name=name,
+                    arguments=arguments,
+                    concurrency_safe=bool(
+                        tool is not None
+                        and tool.concurrency_safe
+                    ),
+                )
+            )
+
+        return jobs, immediate_results
+
+    def _run_tool_calls(self, tool_calls: list[dict]) -> list[dict]:
+        jobs, result_by_index = self._prepare_tool_jobs(tool_calls)
+
+        outcomes = self.scheduler.execute(
+            jobs,
+            execute_one=lambda job: self._execute_tool(
+                job.name,
+                job.arguments,
+            ),
+            cancelled=self.cancelled,
+        )
+        for outcome in outcomes:
+            result_by_index[outcome.index] = outcome.content
+
+        tool_messages: list[dict] = []
+        for index, tool_call in enumerate(tool_calls):
+            tool_messages.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": tool_call["id"],
+                    "content": result_by_index.get(
+                        index,
+                        "Error: tool produced no result",
+                    ),
+                }
+            )
+        return tool_messages

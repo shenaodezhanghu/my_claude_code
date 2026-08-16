@@ -27,3 +27,15 @@ def with_retry(operation: Callable[[], T], max_retries: int = 3) -> T:
             time.sleep(delay)
 
     raise RuntimeError("unreachable")
+
+
+def is_prompt_too_long(exc: Exception) -> bool:
+    text = str(exc).lower()
+    return any(
+        marker in text
+        for marker in (
+            "prompt too long",
+            "maximum context length",
+            "context_length_exceeded",
+        )
+    )

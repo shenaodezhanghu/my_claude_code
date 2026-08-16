@@ -5,6 +5,7 @@ from .base import Tool, ToolContext
 
 class AgentTool(Tool):
     read_only = True
+    deferred = True
 
     def __init__(self) -> None:
         super().__init__(

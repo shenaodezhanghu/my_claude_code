@@ -18,6 +18,7 @@ class Tool(ABC):
 
     read_only = False
     concurrency_safe = False
+    deferred = False
 
     def __init__(
         self,

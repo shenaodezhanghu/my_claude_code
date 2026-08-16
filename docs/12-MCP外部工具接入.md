@@ -334,47 +334,113 @@ if agent_mode == "plan" and tool_name.startswith("mcp__"):
 → tools/call
 ```
 
+本节需要长期使用的服务器名称、启动命令、参数和认证信息统一写入：
+
+```text
+myclaude/myclaude/.env
+```
+
+不要继续使用 CMD 的临时 `set`。`set` 只对当前终端窗口有效，关闭窗口就会丢失；`.env` 会在程序启动时由 `python-dotenv` 加载。
+
+当前 `main.py` 已经定义：
+
+```python
+ENV_FILE = Path(__file__).resolve().parent / ".env"
+```
+
+为了确保从 PyCharm、CMD 或其他工作目录启动时都读取同一个文件，将：
+
+```python
+load_dotenv()
+```
+
+改成：
+
+```python
+load_dotenv(dotenv_path=ENV_FILE)
+```
+
+`.gitignore` 必须包含：
+
+```gitignore
+.env
+```
+
+`MINI_MCP_ARGS` 的值必须是合法 JSON 字符串数组。为了避免 `.env` 解析器去掉内部双引号，外层统一使用单引号：
+
+```dotenv
+MINI_MCP_ARGS='["参数1","参数2"]'
+```
+
+当前第十二章只支持一个 MCP 连接，因此下面 GitHub、Filesystem 和自定义服务器的配置是三个互斥示例。切换服务器时替换 `.env` 中同一组 `MINI_MCP_*`，不要把三组同时追加进去；第十三章的 `McpManager` 才支持多服务器。
+
 ### 12.8.1 接入 GitHub 官方 MCP Server
 
 先安装并启动 Docker，再创建只具备所需权限的 GitHub PAT。不要把 PAT 写进代码或提交到 Git。
 
-从 `myclaude/myclaude` 的 CMD 运行：
+在 `myclaude/myclaude/.env` 中增加：
+
+```dotenv
+GITHUB_PERSONAL_ACCESS_TOKEN=你的GitHub_PAT
+GITHUB_READ_ONLY=1
+GITHUB_TOOLSETS=repos
+
+MINI_MCP_NAME=github
+MINI_MCP_COMMAND=docker
+MINI_MCP_ARGS='["run","-i","--rm","-e","GITHUB_PERSONAL_ACCESS_TOKEN","-e","GITHUB_READ_ONLY","-e","GITHUB_TOOLSETS","ghcr.io/github/github-mcp-server"]'
+```
+
+这里的三个 `-e` 把宿主机从 `.env` 加载的变量传入 Docker 容器。`GITHUB_READ_ONLY=1` 将官方服务器限制为只读，`GITHUB_TOOLSETS=repos` 只加载仓库工具。GitHub 官方服务器支持这些环境变量；只读模式会移除写工具，即使所选 Toolset 原本包含写能力。
+
+保存 `.env` 后完全退出并重新启动程序：
 
 ```bat
-set "GITHUB_PERSONAL_ACCESS_TOKEN=你的GitHub_PAT"
-set "MINI_MCP_NAME=github"
-set "MINI_MCP_COMMAND=docker"
-set "MINI_MCP_ARGS=["run","-i","--rm","-e","GITHUB_PERSONAL_ACCESS_TOKEN","-e","GITHUB_READ_ONLY=1","-e","GITHUB_TOOLSETS=repos","ghcr.io/github/github-mcp-server"]"
 python main.py "使用 GitHub MCP 搜索 topic:backend，按照 stars 降序返回 Star 最多的项目，并给出简介和链接"
 ```
 
-这里通过 `GITHUB_READ_ONLY=1` 将官方服务器限制为只读，通过 `GITHUB_TOOLSETS=repos` 只加载仓库工具。模型应选择注册后的 `mcp__github__search_repositories`，而不是调用项目内置工具。
+启动时应该先看到：
+
+```text
+已连接 MCP Server 'github'，发现 N 个工具。
+```
+
+随后模型应选择类似 `mcp__github__search_repositories` 的动态注册工具，而不是把“GitHub 工具”误解为项目本地 `mini_claude/tools/` 目录。
 
 ### 12.8.2 接入社区 Filesystem MCP Server
 
-Windows 启动 `npx` 时使用 `cmd /c`：
+切换到 Filesystem MCP 时，用下面内容替换 `.env` 中 GitHub 的 `MINI_MCP_*` 配置；GitHub Token 可以删除或暂时保留，但绝不能提交：
 
-```bat
-set "MINI_MCP_NAME=filesystem"
-set "MINI_MCP_COMMAND=cmd"
-set "MINI_MCP_ARGS=["/c","npx","-y","@modelcontextprotocol/server-filesystem","."]"
-python main.py "使用 filesystem MCP 列出当前目录"
+```dotenv
+MINI_MCP_NAME=filesystem
+MINI_MCP_COMMAND=cmd
+MINI_MCP_ARGS='["/c","npx","-y","@modelcontextprotocol/server-filesystem","."]'
 ```
 
 最后一个 `.` 是允许该服务器访问的目录。这个服务器与现有文件工具能力重叠，因此主要用于验证通用接入能力；项目实际使用时没有必要同时保留两套相同文件工具。
 
-### 12.8.3 接入任意自定义服务器
-
-如果服务器通过 Python 启动，只改变配置：
+重新启动：
 
 ```bat
-set "MINI_MCP_NAME=myserver"
-set "MINI_MCP_COMMAND=python"
-set "MINI_MCP_ARGS=["path/to/server.py"]"
+python main.py "使用 filesystem MCP 列出当前目录"
+```
+
+### 12.8.3 接入任意自定义服务器
+
+如果服务器通过 Python 启动，只替换 `.env` 配置：
+
+```dotenv
+MINI_MCP_NAME=myserver
+MINI_MCP_COMMAND=python
+MINI_MCP_ARGS='["path/to/server.py"]'
+```
+
+保存后重新启动：
+
+```bat
 python main.py "列出并使用 myserver 提供的工具"
 ```
 
-因此，新增 MCP Server 时不修改 `_ensure_mcp()`，也不新增服务器专用分支。
+因此，新增 MCP Server 时只修改 `.env`，不修改 `_ensure_mcp()`，也不新增服务器专用分支。Agent 在第一次 `chat()` 时只读取一次 MCP 配置并尝试连接，所以修改 `.env` 后必须重启当前 Python 进程。
 
 ## 12.9 理解检查
 

@@ -11,8 +11,11 @@ TRUE_VALUES = {"1", "true", "yes", "on"}
 
 @dataclass(frozen=True)
 class ModelCapabilities:
+    # 显式 cache_control
     explicit_cache: bool
+    # 可靠判断单个工具调用已经完整
     tool_stream_completion: bool
+    # Token 使用统计
     usage_in_stream: bool
 
 

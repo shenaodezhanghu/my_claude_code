@@ -10,7 +10,7 @@ from .base import Tool, ToolContext
 class WebFetchTool(Tool):
     read_only = True
     concurrency_safe = True
-
+    deferred = True
     def __init__(self) -> None:
         super().__init__(
             "web_fetch",
@@ -68,7 +68,7 @@ class WebFetchTool(Tool):
 class WebSearchTool(Tool):
     read_only = True
     concurrency_safe = True
-
+    deferred = True
     def __init__(self) -> None:
         super().__init__("web_search", "使用 Tavily 搜索互联网信息")
 

@@ -6,6 +6,7 @@ from .base import Tool, ToolContext
 
 
 class McpProxyTool(Tool):
+    deferred = True
     def __init__(
         self,
         server_name: str,

@@ -23,6 +23,19 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+
+def show_cache(agent: MINI_CLUE_AGENT) -> None:
+    details = agent.usage.get("prompt_tokens_details") or {}
+    print(
+        "\nToken 统计："
+        f" 输入={agent.usage.get('prompt_tokens', 0)},"
+        f" 输出={agent.usage.get('completion_tokens', 0)},"
+        f" 总计={agent.usage.get('total_tokens', 0)},"
+        f" 创建缓存={details.get('cache_creation_input_tokens', 0)},"
+        f" 命中缓存={details.get('cached_tokens', 0)}"
+    )
+    return
+
 def resolve_user_input(agent: MINI_CLUE_AGENT, text: str) -> str:
     return resolve_skill(
         text,
@@ -32,6 +45,7 @@ def resolve_user_input(agent: MINI_CLUE_AGENT, text: str) -> str:
 
 def run_one_shot(agent: MINI_CLUE_AGENT, prompt: str, session_id: str) -> None:
     agent.chat(resolve_user_input(agent, prompt))
+    show_cache(agent)
     save_session(session_id, agent.history())
 
 
@@ -40,6 +54,7 @@ def show_history(agent: MINI_CLUE_AGENT) -> None:
         role = message.get("role", "unknown")
         content = str(message.get("content") or "")
         print(f"{role}: {content}")
+
 
 
 
@@ -63,6 +78,7 @@ def run_repl(agent: MINI_CLUE_AGENT, session_id: str) -> None:
             continue
 
         agent.chat(resolve_user_input(agent, line))
+        show_cache(agent)
         save_session(session_id, agent.history())
 
 

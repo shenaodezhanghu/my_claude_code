@@ -1,7 +1,16 @@
 import platform
 from pathlib import Path
 import subprocess
+from collections.abc import Iterable
+from dataclasses import dataclass
 
+from mini_claude.model import ModelCapabilities
+
+
+@dataclass(frozen=True)
+class PromptParts:
+    static: str
+    dynamic: str
 
 
 STATIC_PROMPT  = """
@@ -27,21 +36,73 @@ STATIC_PROMPT  = """
 - 遇到无法安全推断的重要选择时，向用户说明。
 """
 
-def build_system_prompt() -> str:
-    cwd = Path.cwd()
-    instruction_path = find_project_instruction(cwd)
-
-    environment = f"""
-当前环境：
-- 操作系统：{platform.system()}
-- 当前工作目录：{cwd}
-"""
+def build_prompt_parts(
+    project_root: Path,
+    mode_prompt: str = "",
+    memory_prompt: str = "",
+    deferred_names: Iterable[str] = (),
+) -> PromptParts:
+    instruction_path = find_project_instruction(project_root)
+    sections = [
+        "当前环境：",
+        f"- 操作系统：{platform.system()}",
+        f"- 当前工作目录：{project_root}",
+        "",
+        "Git 信息：",
+        get_git_context(),
+    ]
 
     if instruction_path:
-        project_instruction = instruction_path.read_text(encoding="utf-8")
-        environment += f"\n项目说明：\n{project_instruction}\n"
-        environment += f"\ngit信息{get_git_context()}\n"
-    return STATIC_PROMPT + environment
+        try:
+            instruction = instruction_path.read_text(
+                encoding="utf-8"
+            ).strip()
+        except OSError:
+            instruction = ""
+        if instruction:
+            sections.extend(["", "项目说明：", instruction])
+
+    if mode_prompt.strip():
+        sections.extend(["", mode_prompt.strip()])
+    if memory_prompt.strip():
+        sections.extend(["", memory_prompt.strip()])
+
+    names = sorted(set(deferred_names))
+    if names:
+        sections.extend(
+            [
+                "",
+                "可按需加载的工具：" + ", ".join(names),
+                "需要时先调用 tool_search。",
+            ]
+        )
+
+    return PromptParts(
+        static=STATIC_PROMPT.strip(),
+        dynamic="\n".join(sections).strip(),
+    )
+
+
+def build_system_message(
+    parts: PromptParts,
+    capabilities: ModelCapabilities,
+) -> dict:
+    if not capabilities.explicit_cache:
+        return {
+            "role": "system",
+            "content": f"{parts.static}\n\n{parts.dynamic}",
+        }
+    return {
+        "role": "system",
+        "content": [
+            {
+                "type": "text",
+                "text": parts.static,
+                "cache_control": {"type": "ephemeral"},
+            },
+            {"type": "text", "text": parts.dynamic},
+        ],
+    }
 
 
 

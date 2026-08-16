@@ -25,6 +25,7 @@ READ_ONLY_TOOLS = {
     "web_search",
     "environment_info",
     "agent",
+    "tool_search",
 }
 EDIT_TOOLS = {"write_file", "edit_file"}
 

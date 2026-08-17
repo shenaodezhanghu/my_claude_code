@@ -1,17 +1,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import json
 from pathlib import Path
 import re
 from datetime import date
-from typing import Any
 
 from mini_claude.frontmatter import parse_frontmatter
 
 
 MEMORY_TYPES = {"episodic", "semantic"}
-
 
 
 @dataclass(frozen=True)
@@ -32,7 +29,6 @@ class MemoryCandidate:
     tags: list[str]
     importance: float
     reason: str
-
 
 
 def load_memories(project_root: Path) -> list[MemoryEntry]:
@@ -162,6 +158,35 @@ def consolidate_memory_candidates(
     return saved
 
 
+def forget_memory(
+    project_root: Path,
+    name: str,
+) -> Path | None:
+    entry = next(
+        (
+            item
+            for item in load_memories(project_root)
+            if item.name == name
+        ),
+        None,
+    )
+    if entry is None:
+        return None
+
+    forgotten_dir = project_root / ".mini-memory" / ".forgotten"
+    forgotten_dir.mkdir(parents=True, exist_ok=True)
+    target = forgotten_dir / entry.path.name
+    counter = 2
+    while target.exists():
+        target = forgotten_dir / (
+            f"{entry.path.stem}-{counter}{entry.path.suffix}"
+        )
+        counter += 1
+
+    entry.path.replace(target)
+    return target
+
+
 def extract_keywords(text: str) -> set[str]:
     lower = text.lower()
     english = {
@@ -229,4 +254,3 @@ def keyword_recall(
         )[:limit]
     ]
     return format_memories(selected)
-

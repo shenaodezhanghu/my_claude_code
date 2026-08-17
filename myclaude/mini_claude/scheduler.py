@@ -5,6 +5,9 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 import threading
 
+from mini_claude.cancellation import AgentCancelled
+
+
 @dataclass
 class ToolJob:
     index: int
@@ -42,6 +45,8 @@ class ToolScheduler:
                 )
             try:
                 content = execute_one(job)
+            except AgentCancelled:
+                raise
             except Exception as exc:
                 content = f"Error: {type(exc).__name__}: {exc}"
             return ToolOutcome(

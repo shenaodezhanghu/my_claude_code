@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from .base import Tool, ToolContext
-
+from mini_claude.cancellation import AgentCancelled
 
 # MAX_RESULT_CHARS = 50_000
 
@@ -117,6 +117,8 @@ class ToolRegistry:
             )
         try:
             result = tool.run(arguments, context)
+        except AgentCancelled:
+            raise
         except Exception as exc:
             result = f"Error: {type(exc).__name__}: {exc}"
 

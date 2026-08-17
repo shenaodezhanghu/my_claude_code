@@ -5,7 +5,8 @@ import urllib.error
 import urllib.request
 
 from .base import Tool, ToolContext
-
+import os
+from tavily import TavilyClient
 
 class WebFetchTool(Tool):
     read_only = True
@@ -83,10 +84,21 @@ class WebSearchTool(Tool):
         }
 
     def run(self, args: dict, context: ToolContext) -> str:
-        try:
-            import tavily
-        except ImportError:
-            return "Error: 使用 web_search 前请先安装 tavily-python"
+        api_key = os.environ.get("TAVILY_API_KEY")
+        if not api_key:
+            return "Error: 缺少 TAVILY_API_KEY"
 
-        response = tavily.search(query=args["query"], max_results=5)
-        return json.dumps(response, ensure_ascii=False, default=str)
+        try:
+            client = TavilyClient(api_key=api_key)
+            response = client.search(
+                query=str(args["query"]),
+                max_results=5,
+            )
+        except Exception as exc:
+            return f"Error: Tavily search failed: {exc}"
+
+        return json.dumps(
+            response,
+            ensure_ascii=False,
+            default=str,
+        )

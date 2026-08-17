@@ -247,13 +247,7 @@ save_session(session_id, agent.history())
 
 优化方法：新增 `ToolScheduler`，将连续且 `concurrency_safe=True` 的工具组成安全批次并行执行；遇到写入或其他非并发安全工具时，先等待当前批次完成，再顺序执行该工具。最终结果仍按原调用索引排序，保证工具消息协议稳定。
 
-### 3. 流式解析、工具执行和 Agent Loop 耦合过重
-
-背景：原先 Agent 同时负责流式文本打印、工具调用参数拼接、usage 收集和工具执行，后续增加缓存统计与调度时不易维护。
-
-优化方法：把流式分片收集提取到 `streaming.py`，把工具执行顺序与并发控制提取到 `scheduler.py`。Agent 只负责协调模型调用、权限检查、预算和消息历史。
-
-### 4. 长对话不能只依赖一次粗粒度摘要
+### 3. 长对话不能只依赖一次粗粒度摘要
 
 背景：直接摘要全部历史可能破坏最近的工具调用关系，也可能为了少量超长工具输出而过早调用模型生成摘要。
 
@@ -268,7 +262,7 @@ save_session(session_id, agent.history())
 
 这样优先通过确定性规则释放空间，只有历史仍然过长时才调用模型摘要。
 
-### 5. Prompt Too Long 不能交给普通网络重试
+### 4. Prompt Too Long 不能交给普通网络重试
 
 背景：在模型请求中，如果历史消息和工具结果过长，可能触发上下文超限错误，例如 `prompt too long`、`maximum context length` 或 `context_length_exceeded`。
 
@@ -299,3 +293,61 @@ def is_prompt_too_long(exc: Exception) -> bool:
 → 只额外重试一次
 → 仍失败则停止并提示用户
 ```
+
+# Day4
+
+## 今日完成
+
+- 完成第 13.15 节的单进程 CLI 收尾：将新建与恢复逻辑统一到 `open_session()`，由 `CliApplication` 持有当前 Agent，并为后续会话切换提供统一入口。
+- 完成 Session 工作区体系：每个会话绑定独立 `workspace_root`，消息、运行状态、工作记忆和工具结果统一保存到项目内 `.mini-agent/sessions/<session_id>/`。
+- 增加 Session Index，通过 `session_id → workspace_root` 恢复原项目；随后将索引从用户主目录迁移到当前 Mini Claude 项目的 `.mini-agent/session-index.json`，并补录已有项目内会话。
+- 完成动态目录授权：`WorkspacePolicy` 分别维护可读与可写目录，外部目录首次访问时确认授权，文件工具执行前继续进行最终路径边界检查。
+- 完成运行状态持久化与恢复：`state.json` 保存模型、权限模式、Mode、Deferred Tool 激活状态、工作区授权、Budget 使用情况、Plan 和最近一次 usage；损坏的 JSON 明确报错，不再静默恢复为空状态。
+- 完成配置优先级：本次显式 CLI 参数优先于 Session 状态，Session 状态优先于环境变量或程序默认值；Token 单价继续由 `main.py` 常量提供，并可从旧 Session 恢复。
+- 完成 Slash Command Registry，支持 `/help`、`/status`、`/history`、`/sessions`、`/resume`、`/new`、`/mode`、`/model`、`/cwd`、`/permissions`、`/compact`、`/clear` 和 `/exit`，并保留现有 Skill 的斜杠调用。
+- 完成取消链路：Ctrl+C 能通知当前 Agent，模型流、平滑输出、工具调度器和 Shell 共享同一个取消事件；取消异常不会再被 Registry 或 Scheduler 转换成普通工具错误。
+- 完成外部目录结果路径兼容：项目内文件显示相对路径，授权的外部文件显示绝对路径，避免 `relative_to(project_root)` 在外部路径上抛出异常。
+- 完成 Token 与费用展示：区分普通输入、缓存命中和输出 Token，按各自每百万 Token 单价计算本轮与累计人民币费用。
+- 完成进入下一阶段前的整体检查，修正 Agent 公共方法归属、工作区属性引用、`--new/--resume` 参数互斥、取消输出检查、模块导入路径和 Plan 审批选项提示等连接问题。
+
+## 遇到的问题/修改
+
+### 1. 无需执行的 Plan 被再次送入 Agent Loop，界面停在“助手：”
+
+背景：在 Plan Mode 中完成旅游行程等纯文本规划后，程序展示审批菜单。用户选择“2. 保留历史并执行”，终端随后只显示“助手：”，看起来像程序卡住。
+
+问题：选项 2 的语义是“批准并执行 Plan”。`_review_plan()` 会把完整 Plan 重新追加为一条用户消息并返回 `True`，使 `chat()` 继续调用模型。对于已经完成、且明确不涉及代码或工具操作的规划，没有实际执行步骤，因此程序仍然发起了一次没有必要的模型请求，容易被误认为卡死。原菜单缺少“接受规划结果，但不执行”的明确出口。
+
+优化方法：区分“实施计划”和“仅供查看的规划”。为 `_review_plan()` 增加“接受计划并返回对话，但不执行”的选项；该分支退出 Plan Mode、清理审批状态并返回 `False`，把控制权交还 REPL：
+
+```python
+if choice == "5":
+    self.mode = "default"
+    self.plan.active = False
+    self.plan.awaiting_review = False
+    return False
+```
+
+菜单同步增加：
+
+```text
+5. 接受计划，返回对话但不执行
+```
+
+使用边界：需要修改代码的 Coding Plan 选择 1 或 2；需要继续完善选择 4；旅游路线、研究提纲等已经完成的纯文本计划选择 5。普通问答和旅游规划通常不需要启动 `--plan`。
+
+### 2. 取消事件没有贯穿完整调用链
+
+背景：程序已经能够通过 Ctrl+C 发出取消信号，但模型流式响应、平滑输出、并行工具调度、工具注册表和 Shell 子进程最初分别处理自己的执行过程。
+
+问题：如果这些组件没有共享同一个取消事件，Ctrl+C 可能只停止最外层等待，内部的模型流、线程任务或 Shell 子进程仍会继续运行。同时，Registry 或 Scheduler 如果捕获并包装取消异常，Agent 会把“用户主动取消”误当成普通工具失败，继续进入下一轮模型调用。
+
+优化方法：由 Agent 创建并持有同一个 `threading.Event`，再把它传入模型流收集器、平滑输出、`ToolContext`、`ToolScheduler` 和 Shell 工具。各层在执行前及长任务过程中检查该事件；收到取消后关闭活动 Stream、终止可终止的子进程，并原样向上传递 `AgentCancelled`，不能转换为普通工具结果。新建或恢复下一次任务前，再统一清除取消状态。
+
+### 3. 模型输出本身不能作为安全边界
+
+背景：模型在执行 `git reset --hard`、删除文件或运行 Shell 命令前，通常能够用自然语言说明风险并询问用户是否确认。
+
+问题：模型的提示内容具有不确定性，可能遗漏风险、误判命令，也可能直接发起工具调用。仅依赖 System Prompt 要求模型“谨慎操作”，不能保证危险行为一定被阻止，因此模型生成的警告不能代替程序级权限控制。
+
+优化方法：把安全边界放在工具执行层。工具调用必须先经过工作区路径校验、权限模式判断和危险操作确认；明确禁止的操作直接拒绝，需要审批的操作由程序展示固定确认提示并等待用户输入。Shell 命令还应采用命令结构解析、允许/拒绝规则、运行隔离和最小权限等多层防护。模型负责提出操作和解释原因，程序负责最终授权与执行。

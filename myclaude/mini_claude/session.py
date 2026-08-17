@@ -1,33 +1,92 @@
 import json
 from pathlib import Path
 
-
-# session_id = uuid4().hex
-SESSION_DIR = Path.home() / ".mini-agent"
-# SESSION_FILE = SESSION_DIR / f"{session_id}.json"
+from mini_claude.session_workspace import SessionWorkspace
 
 
-def get_session_file(session_id: str) -> Path:
-    return SESSION_DIR / f"{session_id}.json"
+LEGACY_SESSION_DIR = Path.home() / ".mini-agent"
 
 
-def save_session(session_id: str, messages: list[dict]) -> None:
-    SESSION_DIR.mkdir(parents=True, exist_ok=True)
-    session_file = get_session_file(session_id)
-    session_file.write_text(
+def _read_messages(path: Path) -> list[dict] | None:
+    if not path.is_file():
+        return None
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return value if isinstance(value, list) else None
+
+
+def save_session(
+    workspace: SessionWorkspace,
+    messages: list[dict],
+) -> None:
+    workspace.root.mkdir(parents=True, exist_ok=True)
+    workspace.messages_file.write_text(
         json.dumps(messages, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
 
 
-def load_session(session_id: str) -> list[dict]:
-    session_file = get_session_file(session_id)
+def load_session(workspace: SessionWorkspace) -> list[dict]:
+    current = _read_messages(workspace.messages_file)
+    if current is not None:
+        return current
 
-    if not session_file.is_file():
-        return []
+    legacy = LEGACY_SESSION_DIR / f"{workspace.session_id}.json"
+    return _read_messages(legacy) or []
 
+
+class SessionStateError(RuntimeError):
+    pass
+
+
+def load_runtime_state(path: Path) -> dict:
+    if not path.is_file():
+        return {}
     try:
-        value = json.loads(session_file.read_text(encoding="utf-8"))
-        return value if isinstance(value, list) else []
-    except (OSError, json.JSONDecodeError):
-        return []
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except OSError as exc:
+        raise SessionStateError(
+            f"无法读取运行状态：{path}: {exc}"
+        ) from exc
+    except json.JSONDecodeError as exc:
+        raise SessionStateError(
+            f"运行状态 JSON 已损坏：{path}: {exc}"
+        ) from exc
+    if not isinstance(value, dict):
+        raise SessionStateError(
+            f"运行状态必须是 JSON 对象：{path}"
+        )
+    return value
+
+
+def save_runtime_state(path: Path, value: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(".tmp")
+    temporary.write_text(
+        json.dumps(value, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    temporary.replace(path)
+
+def migrate_runtime_state(value: dict) -> dict:
+    version = int(value.get("version", 1))
+
+    if version == 1:
+        migrated = dict(value)
+        migrated["version"] = 2
+        migrated.setdefault("workspace", {})
+        migrated.setdefault("activated_tools", [])
+        migrated.setdefault("budget_limits", {})
+        migrated.setdefault("budget_usage", {})
+        migrated.setdefault("plan", {})
+        migrated.setdefault("last_usage", {})
+        return migrated
+
+    if version == 2:
+        return value
+
+    raise SessionStateError(
+        f"无法迁移 Session 状态版本：{version}"
+    )

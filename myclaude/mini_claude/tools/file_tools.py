@@ -7,13 +7,36 @@ from pathlib import Path
 from .base import Tool, ToolContext
 
 
-def resolve_project_path(raw_path: str, context: ToolContext) -> Path:
-    project_root = context.project_root.resolve()
-    path = (project_root / raw_path).resolve()
-    if not path.is_relative_to(project_root):
-        raise PermissionError("只能访问当前项目目录中的文件")
+def resolve_project_path(
+    raw_path: str,
+    context: ToolContext,
+    access: str = "read",
+) -> Path:
+    policy = context.workspace_policy
+    if policy is None:
+        project_root = context.project_root.resolve()
+        path = (project_root / raw_path).resolve()
+        if not path.is_relative_to(project_root):
+            raise PermissionError(
+                "只能访问当前项目目录中的文件"
+            )
+        return path
+
+    path = policy.resolve_path(raw_path)
+    if not policy.is_allowed(path, access):
+        raise PermissionError("该目录尚未获得本会话授权")
     return path
 
+def display_path(
+    path: Path,
+    context: ToolContext,
+) -> str:
+    try:
+        return str(
+            path.relative_to(context.project_root)
+        )
+    except ValueError:
+        return str(path)
 
 def check_file_freshness(
     path: Path,
@@ -93,7 +116,7 @@ class ReadFileTool(Tool):
             return "Error: 没有提供文件路径"
 
         try:
-            path = resolve_project_path(raw_path, context)
+            path = resolve_project_path(raw_path, context, access="read")
             content = path.read_text(encoding="utf-8")
             context.read_file_state[str(path)] = path.stat().st_mtime
             return "\n".join(
@@ -131,7 +154,7 @@ class WriteFileTool(Tool):
         }
 
     def run(self, args: dict, context: ToolContext) -> str:
-        path = resolve_project_path(args["path"], context)
+        path = resolve_project_path(args["path"], context, access="write")
         freshness_error = check_file_freshness(path, context)
         if freshness_error:
             return freshness_error
@@ -148,7 +171,7 @@ class WriteFileTool(Tool):
         )
         omitted = f"\n... ({len(lines)} lines total)" if len(lines) > 30 else ""
         return (
-            f"Successfully wrote {path.relative_to(context.project_root)} "
+            f"Successfully wrote {display_path(path, context)} "
             f"({len(lines)} lines)\n\n{preview}{omitted}"
         )
 
@@ -173,7 +196,7 @@ class EditFileTool(Tool):
         }
 
     def run(self, args: dict, context: ToolContext) -> str:
-        path = resolve_project_path(args["path"], context)
+        path = resolve_project_path(args["path"], context, access="write")
         freshness_error = check_file_freshness(path, context)
         if freshness_error:
             return freshness_error
@@ -202,8 +225,9 @@ class EditFileTool(Tool):
             else ""
         )
         return (
-            f"Successfully edited {path.relative_to(context.project_root)}"
-            f"{quote_note}\n\n{generate_diff(content, actual_old_text, new_text)}"
+            f"Successfully edited {display_path(path, context)}"
+            f"{quote_note}\n\n"
+            f"{generate_diff(content, actual_old_text, new_text)}"
         )
 
 
@@ -226,7 +250,7 @@ class ListFilesTool(Tool):
         }
 
     def run(self, args: dict, context: ToolContext) -> str:
-        base = resolve_project_path(args.get("path") or ".", context)
+        base = resolve_project_path(args.get("path") or ".", context, access="read")
         files = []
         omitted = 0
         for path in base.glob(args["pattern"]):
@@ -235,7 +259,7 @@ class ListFilesTool(Tool):
             if ".git" in path.parts or "node_modules" in path.parts:
                 continue
             if len(files) < 200:
-                files.append(str(path.relative_to(context.project_root)))
+                files.append(display_path(path, context))
             else:
                 omitted += 1
         files.sort()
@@ -270,7 +294,7 @@ class GrepSearchTool(Tool):
         }
 
     def run(self, args: dict, context: ToolContext) -> str:
-        base = resolve_project_path(args.get("path") or ".", context)
+        base = resolve_project_path(args.get("path") or ".", context, access="read")
         include = args.get("include")
         try:
             regex = re.compile(args["pattern"])
@@ -295,7 +319,7 @@ class GrepSearchTool(Tool):
                 if regex.search(line):
                     if len(matches) < 100:
                         matches.append(
-                            f"{path.relative_to(context.project_root)}:{number}: {line}"
+                            f"{display_path(path, context)}:{number}: {line}"
                         )
                     else:
                         omitted += 1

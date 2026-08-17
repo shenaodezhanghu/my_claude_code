@@ -1,6 +1,10 @@
 from dataclasses import dataclass
 from typing import Literal
 import re
+from pathlib import Path
+
+from mini_claude.workspace import WorkspacePolicy
+
 
 PermissionAction = Literal["allow", "deny", "confirm"]
 PLAN_BLOCKED_TOOLS = {
@@ -26,8 +30,14 @@ READ_ONLY_TOOLS = {
     "environment_info",
     "agent",
     "tool_search",
+    "working_memory_read",
+    "memory_search",
+    "enter_plan_mode",
+    "exit_plan_mode",
 }
 EDIT_TOOLS = {"write_file", "edit_file"}
+READ_PATH_TOOLS = {"read_file", "list_files", "grep_search"}
+WRITE_PATH_TOOLS = {"write_file", "edit_file"}
 
 
 @dataclass(frozen=True)
@@ -48,16 +58,54 @@ def check_permission(
     arguments: dict,
     mode: str = "default",
     agent_mode: str = "default",
+    plan_file: str | None = None,
 ) -> PermissionResult:
-    if agent_mode == "plan" and tool_name in PLAN_BLOCKED_TOOLS:
-        return PermissionResult(
-            "deny",
-            f"Plan Mode 禁止执行 {tool_name}",
+    if agent_mode == "plan":
+        if tool_name in READ_ONLY_TOOLS:
+            return PermissionResult("allow")
+
+        if tool_name in EDIT_TOOLS:
+            requested = str(arguments.get("path", "")).replace(
+                "\\",
+                "/",
+            )
+            allowed_plan = (plan_file or "").replace("\\", "/")
+            if requested == allowed_plan:
+                return PermissionResult("allow")
+            return PermissionResult(
+                "deny",
+                f"Plan Mode 只允许修改 {allowed_plan}",
+            )
+
+        if tool_name == "run_shell":
+            return PermissionResult(
+                "deny",
+                "Plan Mode 禁止运行 Shell",
+            )
+
+        if tool_name.startswith("mcp__"):
+            return PermissionResult(
+                "deny",
+                "Plan Mode 禁止调用行为未知的 MCP 工具",
+            )
+
+    if tool_name == "working_memory_update":
+        return PermissionResult("allow")
+
+    if tool_name in {"memory_add", "memory_forget"}:
+        if mode == "dont_ask":
+            return PermissionResult(
+                "deny",
+                "非交互模式禁止修改长期记忆",
+            )
+        target = (
+            arguments.get("name")
+            if tool_name == "memory_forget"
+            else arguments.get("candidate_index")
         )
-    if agent_mode == "plan" and tool_name.startswith("mcp__"):
         return PermissionResult(
-            "deny",
-            "Plan Mode 禁止调用行为未知的 MCP 外部工具",
+            "confirm",
+            f"{tool_name}: {target}",
         )
     if tool_name in READ_ONLY_TOOLS:
         return PermissionResult("allow")
@@ -82,3 +130,36 @@ def check_permission(
         )
 
     return PermissionResult("confirm", f"未知权限工具：{tool_name}")
+
+
+@dataclass(frozen=True)
+class PathAccessRequest:
+    action: PermissionAction
+    message: str = ""
+    grant_root: Path | None = None
+    access: str = "read"
+
+
+def check_path_access(
+    tool_name: str,
+    arguments: dict,
+    policy: WorkspacePolicy,
+) -> PathAccessRequest:
+    if tool_name not in READ_PATH_TOOLS | WRITE_PATH_TOOLS:
+        return PathAccessRequest("allow")
+
+    raw_path = str(arguments.get("path") or ".")
+    path = policy.resolve_path(raw_path)
+    access = (
+        "write" if tool_name in WRITE_PATH_TOOLS else "read"
+    )
+    if policy.is_allowed(path, access):
+        return PathAccessRequest("allow")
+
+    grant_root = path if path.is_dir() else path.parent
+    return PathAccessRequest(
+        "confirm",
+        f"允许本会话{access}外部目录：{grant_root}",
+        grant_root=grant_root,
+        access=access,
+    )

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import threading
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from typing import Any
+from mini_claude.cancellation import raise_if_cancelled
 
 
 @dataclass(frozen=True)
@@ -15,6 +17,7 @@ class StreamResult:
 def collect_stream(
     stream: Iterable[Any],
     on_text: Callable[[str], None],
+    cancelled: threading.Event,
 ) -> StreamResult:
     content_parts: list[str] = []
     tool_calls: dict[int, dict[str, str]] = {}
@@ -22,6 +25,8 @@ def collect_stream(
     usage = None
 
     for chunk in stream:
+        raise_if_cancelled(cancelled)
+
         if getattr(chunk, "usage", None) is not None:
             usage = chunk.usage
 

@@ -3,6 +3,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 from collections.abc import Callable
+from mini_claude.session_workspace import SessionWorkspace
+from mini_claude.workspace import WorkspacePolicy
+import threading
 
 
 @dataclass
@@ -12,7 +15,11 @@ class ToolContext:
     project_root: Path
     read_file_state: dict[str, float] = field(default_factory=dict)
     subagent_runner: Callable[[str], str] | None = None
-
+    session_workspace: SessionWorkspace | None = None
+    enter_plan_runner: Callable[[], str] | None = None
+    exit_plan_runner: Callable[[], str] | None = None
+    workspace_policy: WorkspacePolicy | None = None
+    cancelled: threading.Event = field(default_factory=threading.Event)
 
 class Tool(ABC):
 

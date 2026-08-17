@@ -35,12 +35,15 @@ def persist_large_result(
     tool_name: str,
     result: str,
     project_root: Path,
+    result_dir: Path | None = None,
+
 ) -> str:
     size = len(result.encode("utf-8"))
     if size <= LARGE_RESULT_BYTES:
         return truncate_result(result)
-
-    result_dir = project_root / ".mini-agent" / "tool-results"
+    result_dir = result_dir or (
+            project_root / ".mini-agent" / "tool-results"
+    )
     result_dir.mkdir(parents=True, exist_ok=True)
 
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
@@ -177,8 +180,9 @@ def summary_compact(
     messages: list[dict],
     client,
     model: str,
+    force: bool = False
 ) -> list[dict]:
-    if history_size(messages) < COMPACT_TRIGGER_CHARS:
+    if not force and history_size(messages) <= COMPACT_TRIGGER_CHARS:
         return messages
 
     boundary = find_recent_boundary(messages)

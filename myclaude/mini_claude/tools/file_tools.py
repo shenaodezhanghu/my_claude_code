@@ -236,7 +236,7 @@ class ListFilesTool(Tool):
     concurrency_safe = True
 
     def __init__(self) -> None:
-        super().__init__("list_files", "列出匹配 glob 模式的文件")
+        super().__init__("list_files", "当只知道文件名、目录或 glob 模式时，用于定位寻找候选文件")
 
     def parameters(self) -> dict:
         return {
@@ -278,7 +278,7 @@ class GrepSearchTool(Tool):
     def __init__(self) -> None:
         super().__init__(
             "grep_search",
-            "使用正则表达式搜索文本，返回文件路径、行号和匹配行",
+            "使用正则表达式搜索文本，返回文件路径、行号和匹配行，需要按文本内容定位文件或符号时使用。",
         )
 
     def parameters(self) -> dict:

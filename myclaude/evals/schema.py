@@ -39,6 +39,9 @@ class EvalResult:
     cache_read_tokens: int = 0
     cache_creation_tokens: int = 0
     estimated_cost_usd: float = 0.0
+    prompt_build_ms: float = 0.0
+    schema_build_ms: float = 0.0
+    prepare_total_ms: float = 0.0
     errors: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:

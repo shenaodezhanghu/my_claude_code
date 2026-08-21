@@ -1,12 +1,22 @@
 from __future__ import annotations
 
 import argparse
+import re
 import shutil
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
 from evals.official.common import write_jsonl
+
+
+GAIA_FINAL_ANSWER_INSTRUCTION = """
+
+请先完成必要推理。最后必须单独输出一行：
+Final answer: <你的最终短答案>
+
+如果题目要求只输出数字、列表或短语，Final answer 后只能放该答案。
+"""
 
 
 def load_gaia_rows(
@@ -38,16 +48,31 @@ def load_gaia_rows(
 def copy_attachment(
     example: dict[str, Any],
     workspace: Path,
-) -> str | None:
+) -> tuple[str | None, str | None]:
     file_path = example.get("file_path")
     if not file_path:
-        return None
+        return None, None
     source = Path(str(file_path))
     if not source.exists():
-        return None
+        return None, f"附件路径不存在：{file_path}"
     target = workspace / source.name
     shutil.copy2(source, target)
-    return target.name
+    return target.name, None
+
+
+def extract_final_answer(text: str) -> str:
+    matches = re.findall(
+        r"(?im)^\s*final answer\s*:\s*(.+?)\s*$",
+        text,
+    )
+    if matches:
+        return matches[-1].strip()
+    return text.strip()
+
+
+def normalize_answer(text: str) -> str:
+    normalized = re.sub(r"\s+", " ", text.strip().lower())
+    return normalized.strip(".,;:，。；：")
 
 
 def run_gaia_subset(
@@ -73,10 +98,17 @@ def run_gaia_subset(
         task_id = str(row["task_id"])
         workspace = Path(".mini-agent") / "gaia-workspaces" / task_id
         workspace.mkdir(parents=True, exist_ok=True)
-        attachment_name = copy_attachment(row, workspace)
-        prompt = str(row["Question"])
+        attachment_name, attachment_error = copy_attachment(row, workspace)
+        prompt = str(row["Question"]).strip()
         if attachment_name:
             prompt += f"\n\n附件已经放在当前工作区：{attachment_name}"
+        elif attachment_error:
+            prompt += (
+                "\n\n注意：该题元数据包含附件，"
+                f"但评估器未能把附件复制到工作区：{attachment_error}。"
+                "如果无法回答，请明确说明缺少附件。"
+            )
+        prompt += GAIA_FINAL_ANSWER_INSTRUCTION
 
         print(f"GAIA running {task_id}")
         agent = MINI_CLUE_AGENT(
@@ -90,15 +122,21 @@ def run_gaia_subset(
         finally:
             agent.close()
 
+        final_answer = str(row.get("Final answer", ""))
+        extracted_answer = extract_final_answer(answer)
         predictions.append(
             {
                 "task_id": task_id,
                 "level": row.get("Level"),
                 "question": row.get("Question"),
-                "final_answer": row.get("Final answer"),
+                "final_answer": final_answer,
                 "prediction": answer,
-                "exact_match": str(answer).strip().lower()
-                == str(row.get("Final answer", "")).strip().lower(),
+                "extracted_answer": extracted_answer,
+                "format_ok": extracted_answer != answer.strip(),
+                "attachment_name": attachment_name,
+                "attachment_error": attachment_error,
+                "exact_match": normalize_answer(extracted_answer)
+                == normalize_answer(final_answer),
             }
         )
 

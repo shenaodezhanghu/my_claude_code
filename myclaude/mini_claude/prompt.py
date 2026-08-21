@@ -3,7 +3,8 @@ from pathlib import Path
 import subprocess
 from collections.abc import Iterable
 from dataclasses import dataclass
-
+import time
+from mini_claude.prompt_cache import PromptBuildCache, file_mtime
 from mini_claude.model import ModelCapabilities
 
 
@@ -20,15 +21,13 @@ STATIC_PROMPT  = """
 工作规则：
 1. 不要猜测文件内容；需要时先使用工具读取。
 2. 修改前先理解相关代码和现有风格，但是要遵循最小必要探索：先读取目标文件，信息不足时再读取直接相关文件。
-3. 优先进行范围最小、可验证的修改。
-4. 工具失败时阅读错误，修正参数后再尝试。
-5. 修改完成后使用适当方式验证结果。
+3. 优先进行范围最小、可验证的修改，不要多做无用的步骤。
+4. 工具失败时最多进行一次相邻修正；仍失败则说明原因并决定下一步怎么做，不要盲目枚举方法。
+5. 执行完任务后必须找方法测试或验证任务是否完成，比如修改代码后必须运行项目已有测试或用户指定验证命令。
 6. 不要声称执行了实际上没有执行的操作。
-7. 不泄露 API Key、口令或其他秘密信息。
-8. 优先定位用户明确指定的文件，当用户只提供文件名、没有提供完整相对路径时，必须先在整个项目中搜索；不存在时先搜索同名/相似文件，不要直接操作；只有确定唯一目标路径后才能执行操作；存在多个同名文件时先询问用户。。
-9. 已有信息足以完成任务时停止探索。
-10. 优先使用已有工具，而不是使用shell工具代替已有其他工具
-11. 只有当用户明确要求记住某个跨会话仍有价值、且不能直接从当前代码推导的事实时，才允许把简短 Markdown 写入 .mini-memory/。不要保存 API Key、密码、Token 或临时任务细节。
+7. 不泄露用户的API Key、口令或其他秘密信息。
+8. 已有工具能够完成任务时，不要用 shell 代替write_file/edit_file等工具完成任务。
+9. 已经拿到足够信息时停止工具调用，直接总结。
 
 记忆规则：
 1. 需要项目长期记忆、用户偏好或过去踩坑经验时，调用 memory_search。
@@ -36,10 +35,13 @@ STATIC_PROMPT  = """
 3. 发现可能跨会话复用的信息时，先加入 working memory 候选。
 4. 候选稳定且重要时，调用 memory_add；长期记忆过时或错误时，调用 memory_forget。
 5. 不要每轮机械地读写记忆，也不要把全部历史会话当作长期记忆。
+6. 只有当用户明确要求记住某个跨会话仍有价值、且不能直接从当前代码推导的事实时，才允许把简短 Markdown 写入 .mini-memory/。不要保存 API Key、密码、Token 或临时任务细节。
+
 沟通规则：
-- 回答简洁明确。
+- 回答简洁明确，用户的要求为第一标准，比如如果用户要求只输出数字、列表或短语，不要附加解释。
 - 说明最终结果和验证情况。
 - 遇到无法安全推断的重要选择时，向用户说明。
+- 推导思考时需要详略分明，考虑周全，完成必要推理，但不要展开完整长篇过程，不需要为了“验证”再写一大段过程。
 """
 
 def build_prompt_parts(
@@ -47,25 +49,19 @@ def build_prompt_parts(
     mode_prompt: str = "",
     memory_prompt: str = "",
     deferred_names: Iterable[str] = (),
+    cache: PromptBuildCache | None = None,
 ) -> PromptParts:
-    instruction_path = find_project_instruction(project_root)
+    instruction = read_project_instruction_cached(project_root, cache)
     sections = [
         "当前环境：",
         f"- 操作系统：{platform.system()}",
         f"- 当前工作目录：{project_root}",
         "",
         "Git 信息：",
-        get_git_context(),
+        get_git_context_cached(cache),
     ]
 
-    if instruction_path:
-        try:
-            instruction = instruction_path.read_text(
-                encoding="utf-8"
-            ).strip()
-        except OSError:
-            instruction = ""
-        if instruction:
+    if instruction:
             sections.extend(["", "项目说明：", instruction])
 
     if mode_prompt.strip():
@@ -131,6 +127,22 @@ def get_git_context() -> str:
         return "- Git：当前目录不是可读取的 Git 仓库"
 
 
+def get_git_context_cached(
+    cache: PromptBuildCache | None,
+) -> str:
+    if cache is None:
+        return get_git_context()
+
+    if not cache.git_expired():
+        return cache.git_context.value
+
+    value = get_git_context()
+    cache.git_context.value = value
+    cache.git_context.updated_at = time.monotonic()
+    cache.git_dirty = False
+    return value
+
+
 def find_project_instruction(start: Path) -> Path | None:
     for directory in (start, *start.parents):
         for name in ("CLAUDE.md", "AGENTS.md"):
@@ -140,5 +152,30 @@ def find_project_instruction(start: Path) -> Path | None:
     return None
 
 
+def read_project_instruction_cached(
+    project_root: Path,
+    cache: PromptBuildCache | None,
+) -> str:
+    instruction_path = find_project_instruction(project_root)
+    if instruction_path is None:
+        return ""
 
+    current_mtime = file_mtime(instruction_path)
+    if (
+        cache is not None
+        and cache.project_instruction.mtime == current_mtime
+    ):
+        return cache.project_instruction.value
+
+    try:
+        value = instruction_path.read_text(encoding="utf-8").strip()
+    except OSError:
+        value = ""
+
+    if cache is not None:
+        cache.project_instruction.value = value
+        cache.project_instruction.mtime = current_mtime
+        cache.project_instruction.updated_at = time.monotonic()
+
+    return value
 

@@ -39,7 +39,7 @@ from mini_claude.session import load_runtime_state, save_runtime_state
 from mini_claude.cancellation import AgentCancelled
 
 from mini_claude.context import summary_compact, persist_large_result, maybe_compact
-
+from mini_claude.prompt_cache import PromptBuildCache
 
 class MINI_CLUE_AGENT:
     def __init__(
@@ -88,6 +88,7 @@ class MINI_CLUE_AGENT:
         self.mcp: McpConnection | None = None
         self.mcp_attempted = False
         self.usage: dict = {}
+        self.prompt_cache = PromptBuildCache()
 
         self.scheduler = ToolScheduler(max_workers=4)
         self.budget = BudgetState(
@@ -109,6 +110,8 @@ class MINI_CLUE_AGENT:
         self.tool_context.exit_plan_runner = self._exit_plan_mode
         self._running = False
         self._active_stream = None
+        self.last_timings: dict[str, float] = {}
+        self.pending_verification = False
 
 
     def _confirm(self, message: str) -> bool:
@@ -382,21 +385,35 @@ class MINI_CLUE_AGENT:
 
     def _call_model_stream(self, user_context: str) -> StreamResult:
 
+        prepare_started = time.perf_counter()
+        prompt_started = time.perf_counter()
         prompt_parts = build_prompt_parts(
             project_root=self.tool_context.project_root,
             mode_prompt=self._mode_prompt(),
             memory_prompt="",
             deferred_names=self.tools.deferred_names(),
+            cache=self.prompt_cache,
         )
         system_message = build_system_message(
             prompt_parts,
             self.model_capabilities,
         )
+        prompt_build_ms = (time.perf_counter() - prompt_started) * 1000
+
+        schema_started = time.perf_counter()
+        tool_schemas = self.tools.schemas()
+        schema_build_ms = (time.perf_counter() - schema_started) * 1000
+        prepare_total_ms = (time.perf_counter() - prepare_started) * 1000
+        self.last_timings = {
+            "prompt_build_ms": prompt_build_ms,
+            "schema_build_ms": schema_build_ms,
+            "prepare_total_ms": prepare_total_ms,
+        }
 
         stream = self.client.chat.completions.create(
             model=self.model,
             messages=[system_message, *self.messages],
-            tools=self.tools.schemas(),
+            tools=tool_schemas,
             stream=True,
             stream_options={"include_usage": True},
         )
@@ -427,6 +444,8 @@ class MINI_CLUE_AGENT:
             arguments,
             self.tool_context,
         )
+        if name in {"write_file", "edit_file", "run_shell"}:
+            self.prompt_cache.mark_git_dirty()
         return persist_large_result(
             name,
             raw_result,
@@ -534,6 +553,7 @@ class MINI_CLUE_AGENT:
             ),
             cancelled=self.cancelled,
         )
+
         for outcome in outcomes:
             result_by_index[outcome.index] = outcome.content
 
@@ -622,3 +642,4 @@ class MINI_CLUE_AGENT:
         self.mode = "default"
         self.plan.awaiting_review = False
         return False
+

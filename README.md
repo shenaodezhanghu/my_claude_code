@@ -1,152 +1,103 @@
+<div align="center">
+
 # Mini Claude Agent
 
-一个基于阿里云百炼 OpenAI 兼容接口、使用 Python 从零实现的轻量 Coding Agent。
+**一个从零实现的轻量级 Coding Agent**
 
-本项目用于学习 Agent 的底层运行机制，自行实现。
+[![Python](https://img.shields.io/badge/Python-3.11+-3776AB?style=flat-square&logo=python&logoColor=white)](#环境要求)
+[![Model](https://img.shields.io/badge/Model-OpenAI%20Compatible-10A37F?style=flat-square)](#环境配置)
+[![Eval](https://img.shields.io/badge/Eval-GAIA%20%2B%20Local-blue?style=flat-square)](#评估与对比)
+[![License](https://img.shields.io/badge/License-Learning%20Project-lightgrey?style=flat-square)](#许可证)
 
+<br/>
 
-## 项目目标
+[快速开始](#快速开始)
+&nbsp;&nbsp;|&nbsp;&nbsp;
+[功能特性](#功能特性)
+&nbsp;&nbsp;|&nbsp;&nbsp;
+[教程目录](#教程目录)
 
-- 理解模型、工具和消息历史如何组成 Agent Loop。
-- 从零实现可扩展的工具注册与执行机制。
-- 让 Agent 能够读取、搜索、修改和验证项目代码。
-- 为文件修改和 Shell 命令建立安全边界。
-- 逐步实现上下文管理、长期记忆、Skills、MCP 和自主运行。
+</div>
 
-## 当前功能
+---
+
+## 项目简介
+
+Mini Claude Agent 是一个使用 Python 从零实现的轻量 Coding Agent。它基于阿里云百炼 OpenAI 兼容接口，完整串起模型调用、工具执行、流式输出、权限控制、上下文管理、长期记忆、Skills、Plan Mode、Sub-Agent、MCP 接入和评估系统。
+
+这个项目不是为了复刻 Claude Code 的内部实现，而是为了把 Coding Agent 的核心机制拆开讲清楚：模型如何决定调用工具、工具结果如何回到上下文、文件修改如何保证安全、长上下文如何压缩、复杂任务如何规划和评估。
+
+适合这些场景：
+
+- 学习 Agent Loop、Tool Calling 和 Coding Agent 的底层实现。
+- 研究 Claude Code 类产品的架构拆解方式。
+- 搭建一个可控、可调试、可评估的本地 Agent 实验环境。
+- 用自建数据集和 GAIA 小样本验证 Prompt 与工具策略优化是否真的有效。
+
+## 功能特性
 
 ### Agent 核心
 
-- 使用阿里云百炼 OpenAI 兼容接口调用模型。
-- 保存连续对话和完整工具调用消息。
-- 支持模型多轮调用工具，直到产生最终回答。
-- 支持流式响应和终端平滑输出。
-- 对可恢复的模型请求错误进行有限重试。
+- 支持 OpenAI 兼容接口，默认从 `.env` 读取模型配置。
+- 支持多轮 Agent Loop：模型调用工具，工具结果回填，再继续推理。
+- 支持流式输出、平滑终端打印、Ctrl+C 取消和有限重试。
+- 支持 token、模型轮次和成本预算统计。
+- 支持 Prompt Too Long 识别和上下文压缩后重试。
 
-### 工具系统
+### 权限与安全
 
-项目使用统一的 `Tool + ToolRegistry + ToolContext` 架构，目前注册 9 个工具：
-
-| 工具 | 作用 |
-|---|---|
-| `read_file` | 读取项目内 UTF-8 文件并返回行号 |
-| `write_file` | 创建或覆盖文件 |
-| `edit_file` | 使用唯一文本匹配完成局部修改 |
-| `list_files` | 使用 glob 模式递归查找文件 |
-| `grep_search` | 使用正则表达式搜索项目内容 |
-| `run_shell` | 在项目根目录执行命令 |
-| `web_fetch` | 读取指定 HTTP(S) 页面 |
-| `web_search` | 使用 Tavily 搜索互联网 |
-| `environment_info` | 获取时间、Python 和系统环境信息 |
-
-文件工具具备以下保护：
-
-- 只能访问当前项目目录。
-- 修改已有文件前必须先读取。
-- 使用文件修改时间检查外部变更，避免覆盖用户刚修改的内容。
-
-### 权限控制
-
-工具执行前经过统一权限判断，支持：
+支持三种权限模式：
 
 | 模式 | 行为 |
 |---|---|
 | `default` | 读取直接允许，文件修改和危险行为要求确认 |
 | `accept_edits` | 自动允许文件修改，危险 Shell 仍需确认 |
-| `dont_ask` | 非交互模式下拒绝需要确认的行为 |
+| `dont_ask` | 非交互评估模式，需要确认的行为自动拒绝 |
 
-当前危险 Shell 检查属于教学版静态规则，不等同于操作系统沙箱。运行 Agent 前仍应确认工作目录和 Git 状态。
+同时支持工作区授权：
 
-### 会话管理
+- 默认只允许读写当前项目目录。
+- 访问外部目录时需要确认授权。
+- Plan Mode 下只允许修改计划文件，不允许修改项目文件或运行 Shell。
 
-- 每次新会话生成唯一 ID。
-- 支持按会话 ID 保存和恢复消息历史。
-- 会话默认保存在：
+> 当前权限系统是教学版安全边界，不等同于操作系统级沙箱。运行真实项目时仍建议先确认 Git 状态。
 
-```text
-C:\Users\当前用户\.mini-agent\<session-id>.json
-```
+## 快速开始
 
-- 支持 `/clear` 清空当前会话历史。
+### 环境要求
 
-## 项目结构
-
-```text
-myclaude/
-├── README.md
-├── Development_log.md
-└── mycode/
-    ├── .env
-    ├── AGENTS.md
-    ├── main.py
-    └── mini_claude/
-        ├── agent.py
-        ├── model.py
-        ├── permissions.py
-        ├── prompt.py
-        ├── retry.py
-        ├── session.py
-        └── tools/
-            ├── base.py
-            ├── registry.py
-            ├── file_tools.py
-            ├── shell_tools.py
-            ├── web_tools.py
-            └── environment_tools.py
-```
-
-核心文件职责：
-
-| 文件 | 职责 |
-|---|---|
-| `main.py` | CLI 参数、REPL 和会话生命周期 |
-| `agent.py` | Agent Loop、流式响应、权限检查和工具回传 |
-| `model.py` | 百炼客户端与模型配置 |
-| `prompt.py` | 静态规则、项目说明和运行环境 Prompt |
-| `permissions.py` | 工具权限策略与危险命令检查 |
-| `session.py` | 会话 JSON 保存和恢复 |
-| `retry.py` | 可恢复模型错误的退避重试 |
-| `tools/registry.py` | 工具注册、Schema 导出和调用分发 |
-
-## 环境要求
-
-- Python 3.10 或更高版本
-- 模型 API Key
-- 支持 Tool Calling 的百炼模型
+- Python 3.11+
+- 支持 Tool Calling 的 OpenAI 兼容模型
 - Tavily API Key（仅 `web_search` 需要）
 
 安装依赖：
 
 ```bat
-pip install openai python-dotenv tavily-python
+cd myclaude\myclaude
+pip install openai python-dotenv tavily-python datasets pytest
 ```
 
-## 环境配置
+### 环境配置
 
-在 `mycode/.env` 中配置：
+在 `myclaude/myclaude/.env` 中配置：
 
 ```env
-OPENAI_API_KEY=你的百炼API-Key
-OPENAI_BASE_URL=你的百炼OpenAI兼容地址
-MINI_CLAUDE_MODEL=qwen-plus
-TAVILY_API_KEY=你的Tavily-Key
+OPENAI_API_KEY=你的百炼或 OpenAI 兼容 API Key
+OPENAI_BASE_URL=你的 OpenAI 兼容接口地址
+MINI_CLAUDE_MODEL=qwen3.7-flash
+TAVILY_API_KEY=你的 Tavily Key
 ```
 
-不要提交 `.env`，也不要在日志、README 或截图中暴露真实 Key。
-
-PyCharm 的 Working directory 应设置为：
-
-```text
-claude-code-from-scratch\myclaude\mycode
-```
-
-## 运行方式
-
-进入代码目录：
+### 启动 Agent
 
 ```bat
-cd myclaude\mycode
 python main.py
+```
+
+单次任务：
+
+```bat
+python main.py "读取 main.py 并说明程序入口"
 ```
 
 创建新会话：
@@ -161,7 +112,7 @@ python main.py --new
 python main.py --resume <session-id>
 ```
 
-选择权限模式：
+指定权限模式：
 
 ```bat
 python main.py --permission-mode default
@@ -169,52 +120,115 @@ python main.py --permission-mode accept_edits
 python main.py --permission-mode dont_ask
 ```
 
-单次任务：
+指定模型、Plan Mode 与工作区：
 
 ```bat
-python main.py "读取 main.py 并说明程序入口"
+python main.py --model qwen3.7-flash
+python main.py --plan
+python main.py --cwd E:\path\to\your-project
 ```
 
-## 使用示例
+## 教程目录
+
+项目文档位于 `myclaude/docs/`，按开发顺序组织：
+
+| 章节 | 内容 |
+|---|---|
+| 00 | 环境搭建与百炼接入 |
+| 01 | 构建最小 Agent Loop |
+| 02 | 为 Agent 添加本地工具 |
+| 03 | 设计系统提示词 |
+| 04 | 构建 CLI 与会话系统 |
+| 05 | 流式输出与可靠调用 |
+| 06 | 工具权限与安全控制 |
+| 07 | 上下文压缩与大结果管理 |
+| 08 | 跨会话记忆系统 |
+| 09 | Skills 与提示词复用 |
+| 10 | Plan Mode 只读规划 |
+| 11 | 多 Agent 与只读子 Agent |
+| 12 | MCP 外部工具接入 |
+| 13 | 架构复盘与下一步 |
+| 14 | 功能测试与验收 |
+| 15 | Mini Claude Agent 评估系统 |
+| 16 | Agent 优化 |
+
+
+## 项目结构
 
 ```text
-你：读取 notes/hello.txt 并总结内容
-你：搜索项目中 ToolRegistry 出现的位置
-你：在 notes/new.txt 写入 hello
-你：运行 Python 语法检查
+myclaude/
+├── README.md
+├── Development_log.md
+├── docs/
+│   ├── 00-环境搭建与百炼接入.md
+│   ├── ...
+│   └── 16-Agent 优化.md
+└── myclaude/
+    ├── main.py
+    ├── AGENTS.md
+    ├── evals/
+    │   ├── datasets/
+    │   ├── fixtures/
+    │   ├── official/
+    │   ├── reports/
+    │   ├── run_eval.py
+    │   ├── run_official.py
+    │   └── compare_reports.py
+    ├── mini_claude/
+    │   ├── agent.py
+    │   ├── budget.py
+    │   ├── context.py
+    │   ├── mcp_client.py
+    │   ├── memory.py
+    │   ├── permissions.py
+    │   ├── plan.py
+    │   ├── prompt.py
+    │   ├── prompt_cache.py
+    │   ├── scheduler.py
+    │   ├── session.py
+    │   ├── streaming.py
+    │   ├── subagent.py
+    │   ├── workspace.py
+    │   └── tools/
+    └── tests/
 ```
 
-当模型只知道文件名、不知道完整路径时，应先使用 `list_files` 搜索整个项目。涉及修改和危险命令时，程序权限层会根据当前模式确认或拒绝。
 
-## 当前限制与后续计划
+## 开发计划
 
-尚未完成：
+- 为 agent 可视化
+- 增加 Trace 回放系统，支持复盘一次任务的完整执行链路，定位工具多调用、参数错误和任务失败原因。
+- 优化工具调用策略，减少重复读取、无关探索和错误参数调用，并强化“修改后必须验证”的闭环。
+- Session / Workspace / Memory 体系完善，新增记忆自动升级
+- 强化权限系统，将工具权限、路径权限、危险命令确认和 Plan Mode 只读边界统一纳入运行链路。
 
-- 精确的上下文 Token 预算和自动压缩。
-- 大工具结果完整持久化。
-- 跨会话长期记忆。
-- Skills 与渐进式加载。
-- Plan Mode。
-- Sub-Agent。
-- MCP 外部工具。
-- 完整测试、评测和可观测性。
-- 真正的 Shell AST 分析与操作系统沙箱。
-## 更新日志
+## 贡献
 
-### 2026-08-13
-```
-- 完成阿里云百炼 OpenAI 兼容接口接入。
-- 完成基础 Agent Loop 和连续对话。
-- 建立 `Tool`、`ToolRegistry`、`ToolContext` 工具架构。
-- 注册文件、搜索、Shell、网页和环境信息等 9 个工具。
-- 为文件工具增加项目路径限制、read-before-edit 和 mtime 检查。
-- 实现动态 System Prompt、项目指令查找和 Git 环境信息。
-- 实现流式响应、平滑终端输出和有限重试。
-- 实现 `default`、`accept_edits`、`dont_ask` 权限模式。
-- 实现唯一会话 ID、会话保存与按 ID 恢复。
-- 修复 Windows Shell 输出的 UTF-8/GBK 解码问题。
-- 优化模型的文件定位流程，要求深层文件先使用 `list_files` 搜索。
-- 建立 Python 实现教程与开发问题日志。
-```
+欢迎通过 Issue 或 Pull Request 参与改进：
 
-项目基于 [claude-code-from-scratch](https://github.com/Windy3f3f3f3f/claude-code-from-scratch) 进行学习与扩展，并借鉴了工具注册等 Agent 框架设计思想。
+1. 补充新的评估样例或 fixture。
+2. 改进工具安全策略和丰富mini-claude能力。
+3. 修复 Windows / macOS / Linux 下的兼容性问题。
+4. mini-claude可视化界面
+
+如果你要提交代码，请尽量同时补充测试或评估记录。
+
+## 致谢
+
+本项目基于 [claude-code-from-scratch](https://github.com/Windy3f3f3f3f/claude-code-from-scratch) 的学习路线进行扩展，并参考了 Hello Agent 的知识。
+
+感谢所有关于 Agent Loop、Tool Calling、MCP、Skills、Plan Mode 和评估系统的开源实践。
+
+## Star History
+
+如果这个项目对你有帮助，欢迎点一个 Star。
+
+<div align="center">
+
+![Star History Chart](https://api.star-history.com/svg?repos=Windy3f3f3f3f/claude-code-from-scratch&type=Date)
+
+</div>
+
+## 许可证
+
+本项目用于学习和研究。若基于上游仓库继续分发，请同时遵守原仓库许可证。

@@ -181,6 +181,18 @@ def run_one_case(
             cache_read_tokens=budget["cache_read_tokens"],
             cache_creation_tokens=budget["cache_creation_tokens"],
             estimated_cost_usd=budget["estimated_cost_usd"],
+            prompt_build_ms=agent.last_timings.get(
+                "prompt_build_ms",
+                0.0,
+            ),
+            schema_build_ms=agent.last_timings.get(
+                "schema_build_ms",
+                0.0,
+            ),
+            prepare_total_ms=agent.last_timings.get(
+                "prepare_total_ms",
+                0.0,
+            ),
             errors=errors,
         )
     except Exception as exc:
@@ -202,6 +214,9 @@ def run_one_case(
 def summarize(results: list[EvalResult]) -> dict:
     total = len(results)
     passed = sum(1 for item in results if item.passed)
+    def average(values: list[float]) -> float:
+        return sum(values) / len(values) if values else 0.0
+
     return {
         "total": total,
         "passed": passed,
@@ -218,6 +233,15 @@ def summarize(results: list[EvalResult]) -> dict:
         ),
         "model_turns": sum(item.model_turns for item in results),
         "tool_calls": sum(item.total_tool_calls for item in results),
+        "prompt_build_ms": average(
+            [item.prompt_build_ms for item in results]
+        ),
+        "schema_build_ms": average(
+            [item.schema_build_ms for item in results]
+        ),
+        "prepare_total_ms": average(
+            [item.prepare_total_ms for item in results]
+        ),
     }
 
 
